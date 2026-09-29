@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 )
 
 // Config define parámetros de generación.
@@ -61,16 +62,22 @@ func (g *Generator) Generate(tracePath, outPath string) error {
 	if err := sc.Err(); err != nil {
 		return fmt.Errorf("leer traza: %w", err)
 	}
+	if len(seen) == 0 {
+		return fmt.Errorf("la traza no contiene syscalls")
+	}
 
 	syscalls := make([]string, 0, len(seen))
 	for s := range seen {
+		if strings.HasPrefix(s, "syscall_") {
+			return fmt.Errorf("syscall %s no tiene nombre seccomp conocido; revisar la traza antes de generar", s)
+		}
 		syscalls = append(syscalls, s)
 	}
 	sort.Strings(syscalls)
 
 	profile := SeccompProfile{
 		DefaultAction: g.cfg.DefaultAction,
-		Architectures: []string{"SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_AARCH64"},
+		Architectures: []string{"SCMP_ARCH_X86_64"},
 		Syscalls: []Syscall{
 			{
 				Names:  syscalls,

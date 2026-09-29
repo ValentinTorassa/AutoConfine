@@ -13,6 +13,7 @@ import (
 	"github.com/ValentinTorassa/autoconfine/internal/generate"
 	"github.com/ValentinTorassa/autoconfine/internal/learn"
 	"github.com/ValentinTorassa/autoconfine/internal/profile"
+	"github.com/ValentinTorassa/autoconfine/internal/traceio"
 )
 
 func main() {
@@ -34,6 +35,8 @@ func main() {
 		os.Exit(runValidate(os.Args[2:]))
 	case "compare":
 		os.Exit(runCompare(os.Args[2:]))
+	case "drift":
+		os.Exit(runDrift(os.Args[2:]))
 	case "merge":
 		os.Exit(runMerge(os.Args[2:]))
 	case "version":
@@ -46,7 +49,57 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Uso: autoconfine <learn|generate|enforce|summary|validate|compare|merge|version> [opciones]")
+	fmt.Fprintln(os.Stderr, "Uso: autoconfine <learn|generate|enforce|summary|validate|compare|drift|merge|version> [opciones]")
+}
+
+func runDrift(args []string) int {
+	fs := flag.NewFlagSet("drift", flag.ExitOnError)
+	path := fs.String("profile", "", "perfil seccomp de referencia")
+	allowSynthetic := fs.Bool("allow-synthetic", false, "aceptar una traza simulada solo para pruebas")
+	fs.Parse(args)
+	if *path == "" || fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "drift: usar --profile perfil.json traza.jsonl")
+		return 1
+	}
+	allowed, err := profile.AllowedSyscalls(*path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drift: %v\n", err)
+		return 1
+	}
+	events, err := traceio.ReadEvents(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drift: %v\n", err)
+		return 1
+	}
+	if len(events) == 0 {
+		fmt.Fprintln(os.Stderr, "drift: empty trace")
+		return 1
+	}
+	for _, event := range events {
+		if event.Phase != "observed-ebpf" && !*allowSynthetic {
+			fmt.Fprintln(os.Stderr, "drift: trace is not observed-ebpf (use --allow-synthetic only for tests)")
+			return 1
+		}
+	}
+	set := drift.ProfileSet(allowed)
+	reporter := drift.NewJSONReporter(os.Stdout)
+	missing := 0
+	for _, event := range events {
+		if drift.Allowed(set, event.Syscall) {
+			continue
+		}
+		missing++
+		if err := reporter.Report(drift.Event{Timestamp: event.Timestamp, Syscall: event.Syscall,
+			Image: event.Image, PID: event.PID, Comm: event.Comm, Profile: *path}); err != nil {
+			fmt.Fprintf(os.Stderr, "drift: %v\n", err)
+			return 1
+		}
+	}
+	fmt.Fprintf(os.Stderr, "drift: %d of %d events outside profile\n", missing, len(events))
+	if missing > 0 {
+		return 2
+	}
+	return 0
 }
 
 func runLearn(args []string) int {
@@ -54,12 +107,16 @@ func runLearn(args []string) int {
 	image := fs.String("image", "", "imagen OCI a observar")
 	duration := fs.Duration("duration", 30*time.Second, "duración de la fase de aprendizaje")
 	out := fs.String("out", "autoconfine.trace.jsonl", "archivo de traza de salida")
+	pid := fs.Int("pid", 0, "PID host de un contenedor ya en ejecución (cgroup v2)")
+	synthetic := fs.Bool("synthetic", false, "emitir una traza simulada, explícitamente")
 	fs.Parse(args)
 
 	cfg := learn.Config{
-		Image:    *image,
-		Duration: *duration,
-		Output:   *out,
+		Image:     *image,
+		Duration:  *duration,
+		Output:    *out,
+		PID:       *pid,
+		Synthetic: *synthetic,
 	}
 
 	tracer := learn.NewTracer(cfg)

@@ -7,7 +7,6 @@
 
 # Go
 /vendor/
-/go.sum
 *.test
 *.out
 coverage.html
@@ -28,3 +27,4 @@ coverage.out
 # eBPF
 *.o
 *.bpf.o
+!internal/bpf/syscalls_bpfel.o

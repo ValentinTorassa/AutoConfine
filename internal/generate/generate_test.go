@@ -50,11 +50,29 @@ func TestGenerateProfile(t *testing.T) {
 	if profile.DefaultAction != "SCMP_ACT_ERRNO" {
 		t.Fatalf("defaultAction = %s, want SCMP_ACT_ERRNO", profile.DefaultAction)
 	}
+	if len(profile.Architectures) != 1 || profile.Architectures[0] != "SCMP_ARCH_X86_64" {
+		t.Fatalf("unexpected architectures: %v", profile.Architectures)
+	}
 	if len(profile.Syscalls) != 1 {
 		t.Fatalf("syscalls len = %d, want 1", len(profile.Syscalls))
 	}
 	got := len(profile.Syscalls[0].Names)
 	if got != 3 {
 		t.Fatalf("names len = %d, want 3", got)
+	}
+}
+
+func TestUnknownSyscallDoesNotWriteProfile(t *testing.T) {
+	dir := t.TempDir()
+	trace := filepath.Join(dir, "trace.jsonl")
+	out := filepath.Join(dir, "profile.json")
+	if err := os.WriteFile(trace, []byte("{\"syscall\":\"syscall_9999\"}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewGenerator(Config{}).Generate(trace, out); err == nil {
+		t.Fatal("expected unknown syscall error")
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("profile should not exist")
 	}
 }

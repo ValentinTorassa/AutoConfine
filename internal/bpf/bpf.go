@@ -1,7 +1,6 @@
 package bpf
 
 import (
-	"errors"
 	"time"
 
 	"github.com/ValentinTorassa/autoconfine/internal/models"
@@ -43,6 +42,7 @@ func (n *NoopProbe) Attach(image string, events chan<- models.SyscallEvent) erro
 				PID:       1000 + i%5,
 				Comm:      "app",
 				Syscall:   common[i%len(common)],
+				Phase:     "synthetic",
 			}:
 				i++
 			case <-n.stop:
@@ -56,17 +56,3 @@ func (n *NoopProbe) Attach(image string, events chan<- models.SyscallEvent) erro
 func (n *NoopProbe) Detach() {
 	close(n.stop)
 }
-
-// EBPFProbe será la implementación real con cilium/ebpf.
-type EBPFProbe struct{}
-
-// NewEBPFProbe reserva la implementación eBPF real.
-func NewEBPFProbe() *EBPFProbe { return &EBPFProbe{} }
-
-// Attach implementa Probe para EBPFProbe.
-func (e *EBPFProbe) Attach(string, chan<- models.SyscallEvent) error {
-	return errors.New("implementación eBPF aún no habilitada")
-}
-
-// Detach implementa Probe para EBPFProbe.
-func (e *EBPFProbe) Detach() {}

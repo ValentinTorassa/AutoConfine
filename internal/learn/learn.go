@@ -12,9 +12,11 @@ import (
 
 // Config define parámetros de la fase de aprendizaje.
 type Config struct {
-	Image    string
-	Duration time.Duration
-	Output   string
+	Image     string
+	Duration  time.Duration
+	Output    string
+	PID       int
+	Synthetic bool
 }
 
 // Tracer encapsula la observación de syscalls.
@@ -25,9 +27,13 @@ type Tracer struct {
 
 // NewTracer crea un nuevo tracer.
 func NewTracer(cfg Config) *Tracer {
+	var probe bpf.Probe = bpf.NewEBPFProbe(cfg.PID)
+	if cfg.Synthetic {
+		probe = bpf.NewNoopProbe()
+	}
 	return &Tracer{
 		cfg: cfg,
-		bpf: bpf.NewNoopProbe(), // cambiar por NewEBPFProbe en entornos con kernel/BTF.
+		bpf: probe,
 	}
 }
 
@@ -35,6 +41,12 @@ func NewTracer(cfg Config) *Tracer {
 func (t *Tracer) Run() error {
 	if t.cfg.Image == "" {
 		return fmt.Errorf("se requiere --image")
+	}
+	if !t.cfg.Synthetic && t.cfg.PID <= 0 {
+		return fmt.Errorf("se requiere --pid del contenedor en ejecución")
+	}
+	if t.cfg.Duration <= 0 {
+		return fmt.Errorf("--duration debe ser positivo")
 	}
 
 	raised := make(chan error, 1)
@@ -49,21 +61,36 @@ func (t *Tracer) Run() error {
 		t.bpf.Detach()
 	}()
 
-	file, err := os.Create(t.cfg.Output)
+	file, err := os.Create(t.cfg.Output + ".tmp")
 	if err != nil {
 		return fmt.Errorf("crear traza: %w", err)
 	}
-	defer file.Close()
+	defer os.Remove(t.cfg.Output + ".tmp")
 
 	enc := json.NewEncoder(file)
+	count := 0
 	for evt := range events {
 		if err := enc.Encode(evt); err != nil {
+			file.Close()
 			return fmt.Errorf("escribir evento: %w", err)
 		}
+		count++
 	}
 
 	if err := <-raised; err != nil {
+		file.Close()
 		return err
 	}
-	return nil
+	if count == 0 {
+		file.Close()
+		return fmt.Errorf("no se observaron syscalls; no se guarda una traza vacía")
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(t.cfg.Output+".tmp", t.cfg.Output)
 }

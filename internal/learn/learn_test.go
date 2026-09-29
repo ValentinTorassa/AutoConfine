@@ -18,9 +18,10 @@ func TestTracerProducesTrace(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "trace.jsonl")
 	tracer := NewTracer(Config{
-		Image:    "test",
-		Duration: 200 * time.Millisecond,
-		Output:   out,
+		Image:     "test",
+		Duration:  200 * time.Millisecond,
+		Output:    out,
+		Synthetic: true,
 	})
 
 	if err := tracer.Run(); err != nil {
