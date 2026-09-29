@@ -191,6 +191,7 @@ func runSummary(args []string) int {
 	}
 
 	fmt.Printf("Syscalls únicas: %d\n", stats.GeneratedAllowed)
+	fmt.Printf("Origen de traza: %s (%d eventos)\n", stats.TraceSource, stats.EventsCount)
 	fmt.Printf("Reducción vs default (%d): %.2f%%\n", stats.DefaultAllowed, stats.ReductionPercent)
 
 	if *jsonOut != "" {

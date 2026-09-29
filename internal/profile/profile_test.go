@@ -39,6 +39,9 @@ func TestAnalyzeTrace(t *testing.T) {
 	if stats.GeneratedAllowed != 3 {
 		t.Fatalf("allowed = %d, want 3", stats.GeneratedAllowed)
 	}
+	if stats.TraceSource != "unknown" || stats.EventsCount != 4 {
+		t.Fatalf("source/count = %s/%d", stats.TraceSource, stats.EventsCount)
+	}
 	if stats.ReductionPercent <= 0 {
 		t.Fatalf("reduction should be positive, got %f", stats.ReductionPercent)
 	}
@@ -53,6 +56,20 @@ func TestAnalyzeTrace(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Fatal("report is empty")
+	}
+}
+
+func TestAnalyzeTraceLabelsObservedSource(t *testing.T) {
+	trace := sampleTrace(t, "observed.jsonl", []string{
+		`{"syscall":"openat","phase":"observed-ebpf"}`,
+		`{"syscall":"close","phase":"observed-ebpf"}`,
+	})
+	stats, err := AnalyzeTrace(trace, 304)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TraceSource != "observed-ebpf" || stats.EventsCount != 2 {
+		t.Fatalf("source/count = %s/%d", stats.TraceSource, stats.EventsCount)
 	}
 }
 

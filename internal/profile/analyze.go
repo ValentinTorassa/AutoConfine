@@ -14,13 +14,32 @@ type Stats struct {
 	GeneratedAllowed int      `json:"generated_allowed"`
 	ReductionPercent float64  `json:"reduction_percent"`
 	UniqueSyscalls   []string `json:"unique_syscalls"`
+	TraceSource      string   `json:"trace_source"`
+	EventsCount      int      `json:"events_count"`
 }
 
 // AnalyzeTrace compara syscalls de una traza contra un perfil por defecto.
 func AnalyzeTrace(tracePath string, defaultAllowed int) (*Stats, error) {
-	counts, err := traceio.ReadSyscalls(tracePath)
+	events, err := traceio.ReadEvents(tracePath)
 	if err != nil {
 		return nil, fmt.Errorf("analyze trace: %w", err)
+	}
+	counts := make(map[string]int)
+	source := "unknown"
+	for i, event := range events {
+		if event.Syscall == "" {
+			continue
+		}
+		counts[event.Syscall]++
+		phase := event.Phase
+		if phase == "" {
+			phase = "unknown"
+		}
+		if i == 0 {
+			source = phase
+		} else if source != phase {
+			source = "mixed"
+		}
 	}
 	unique := traceio.UniqueSyscalls(counts)
 	reduction := 0.0
@@ -32,6 +51,8 @@ func AnalyzeTrace(tracePath string, defaultAllowed int) (*Stats, error) {
 		GeneratedAllowed: len(unique),
 		ReductionPercent: reduction,
 		UniqueSyscalls:   unique,
+		TraceSource:      source,
+		EventsCount:      len(events),
 	}, nil
 }
 
@@ -45,9 +66,12 @@ func WriteReport(stats *Stats, tracePath, outPath string) error {
 
 	fmt.Fprintf(file, "# Reporte de análisis - AutoConfine\n\n")
 	fmt.Fprintf(file, "- **Traza analizada:** `%s`\n", tracePath)
+	fmt.Fprintf(file, "- **Origen declarado:** %s (%d eventos)\n", stats.TraceSource, stats.EventsCount)
 	fmt.Fprintf(file, "- **Syscalls permitidas por defecto:** %d\n", stats.DefaultAllowed)
 	fmt.Fprintf(file, "- **Syscalls en perfil generado:** %d\n", stats.GeneratedAllowed)
 	fmt.Fprintf(file, "- **Reducción:** %.2f%%\n\n", stats.ReductionPercent)
+	fmt.Fprintln(file, "La reducción compara nombres vistos en esta muestra con un número de referencia; no demuestra cobertura completa ni seguridad del perfil.")
+	fmt.Fprintln(file)
 	fmt.Fprintf(file, "## Syscalls permitidas\n\n")
 	for _, s := range stats.UniqueSyscalls {
 		fmt.Fprintf(file, "- `%s`\n", s)
