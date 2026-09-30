@@ -3,6 +3,7 @@ package traceio
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -65,5 +66,21 @@ func TestReadWriteEvents(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Syscall != "openat" {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestScanSyscallsDoesNotInheritPreviousName(t *testing.T) {
+	var notice strings.Builder
+	Malformed = &notice
+	defer func() { Malformed = os.Stderr }()
+	counts, err := scanSyscalls(strings.NewReader("{\"syscall\":\"read\"}\n{\"pid\":3}\nbroken\n{\"syscall\":\"read\"}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["read"] != 2 || len(counts) != 1 {
+		t.Fatalf("counts %v", counts)
+	}
+	if !strings.Contains(notice.String(), "2 líneas") {
+		t.Fatalf("notice %q", notice.String())
 	}
 }

@@ -144,6 +144,7 @@ func runLearn(args []string) int {
 func runGenerate(args []string) int {
 	fs := flag.NewFlagSet("generate", flag.ExitOnError)
 	out := fs.String("out", "autoconfine.seccomp.json", "perfil seccomp de salida")
+	allowSynthetic := fs.Bool("allow-synthetic", false, "aceptar una traza simulada o sin procedencia, solo para pruebas")
 	fs.Parse(args)
 
 	if fs.NArg() == 0 {
@@ -151,12 +152,16 @@ func runGenerate(args []string) int {
 		return 1
 	}
 
-	gen := generate.NewGenerator(generate.Config{})
-	if err := gen.Generate(fs.Arg(0), *out); err != nil {
+	gen := generate.NewGenerator(generate.Config{AllowSynthetic: *allowSynthetic})
+	res, err := gen.Generate(fs.Arg(0), *out)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "generate: %v\n", err)
 		return 1
 	}
-	fmt.Printf("Perfil seccomp guardado en %s\n", *out)
+	for _, warning := range res.Warnings {
+		fmt.Fprintf(os.Stderr, "generate: aviso: %s\n", warning)
+	}
+	fmt.Printf("Perfil seccomp guardado en %s (%d eventos)\n", *out, res.Events)
 	return 0
 }
 

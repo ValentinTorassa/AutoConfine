@@ -116,3 +116,21 @@ func TestMergeTraces(t *testing.T) {
 		t.Fatalf("allowed = %d, want 2", stats.GeneratedAllowed)
 	}
 }
+
+// A leading line without a syscall used to make every trace report "mixed".
+func TestTraceSourceIgnoresLeadingLineWithoutSyscall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	content := `{"pid":1,"phase":"observed-ebpf"}` + "\n" +
+		`{"syscall":"read","phase":"observed-ebpf"}` + "\n" +
+		`{"syscall":"write","phase":"observed-ebpf"}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := AnalyzeTrace(path, 304)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TraceSource != "observed-ebpf" {
+		t.Fatalf("source %q", stats.TraceSource)
+	}
+}

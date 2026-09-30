@@ -26,7 +26,8 @@ func AnalyzeTrace(tracePath string, defaultAllowed int) (*Stats, error) {
 	}
 	counts := make(map[string]int)
 	source := "unknown"
-	for i, event := range events {
+	first := true
+	for _, event := range events {
 		if event.Syscall == "" {
 			continue
 		}
@@ -35,8 +36,10 @@ func AnalyzeTrace(tracePath string, defaultAllowed int) (*Stats, error) {
 		if phase == "" {
 			phase = "unknown"
 		}
-		if i == 0 {
-			source = phase
+		// Compare against the first counted event, not index 0: a leading
+		// line without a syscall used to make any trace look "mixed".
+		if first {
+			source, first = phase, false
 		} else if source != phase {
 			source = "mixed"
 		}
