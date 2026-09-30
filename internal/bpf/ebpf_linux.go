@@ -5,13 +5,11 @@ package bpf
 import (
 	"bytes"
 	_ "embed"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,28 +20,39 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 )
 
 //go:embed syscalls_bpfel.o
 var syscallObject []byte
 
+// EBPFProbe records the syscalls of one container cgroup subtree.
 type EBPFProbe struct {
-	PID    int
-	mu     sync.Mutex
+	PID   int
+	mu    sync.Mutex
+	ready chan error
+	once  sync.Once
+
 	reader *ringbuf.Reader
 	stop   bool
 }
 
-func NewEBPFProbe(pid int) *EBPFProbe { return &EBPFProbe{PID: pid} }
+func NewEBPFProbe(pid int) *EBPFProbe { return &EBPFProbe{PID: pid, ready: make(chan error, 1)} }
 
-// cgroupID selects exactly the host cgroup of a running disposable container.
-func cgroupID(pid int) (uint64, error) {
+// Ready delivers nil once the program is attached (or the error that stopped
+// it), so a caller starts the container only after capture is live.
+func (e *EBPFProbe) Ready() <-chan error { return e.ready }
+
+func (e *EBPFProbe) signal(err error) { e.once.Do(func() { e.ready <- err }) }
+
+// cgroupTarget resolves the cgroup v2 of a container process to its ID and depth.
+func cgroupTarget(pid int) (Target, error) {
 	if pid <= 0 {
-		return 0, errors.New("a running container host PID is required")
+		return Target{}, errors.New("a container host PID is required")
 	}
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
 	if err != nil {
-		return 0, err
+		return Target{}, err
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if !strings.HasPrefix(line, "0::") {
@@ -51,29 +60,42 @@ func cgroupID(pid int) (uint64, error) {
 		}
 		path := strings.TrimPrefix(line, "0::")
 		if path == "/" {
-			return 0, errors.New("refusing to trace the host root cgroup")
+			return Target{}, errors.New("refusing to trace the host root cgroup")
 		}
-		if !strings.Contains(path, "docker-") && !strings.Contains(path, "/docker/") &&
-			!strings.Contains(path, "libpod-") && !strings.Contains(path, "kubepods") {
-			return 0, errors.New("target PID is not in a recognized container cgroup")
+		if !isContainerCgroup(path) {
+			return Target{}, errors.New("target PID is not in a recognized container cgroup")
 		}
 		stat := &syscall.Stat_t{}
 		if err := syscall.Stat(filepath.Join("/sys/fs/cgroup", path), stat); err != nil {
-			return 0, err
+			return Target{}, err
 		}
-		return stat.Ino, nil
+		return Target{CgroupID: stat.Ino, Level: cgroupLevel(path), Path: path}, nil
 	}
-	return 0, errors.New("target process is not in cgroup v2")
+	return Target{}, errors.New("target process is not in cgroup v2")
 }
 
-func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) error {
+// bootWallClock is the wall time at which CLOCK_MONOTONIC read zero.
+func bootWallClock() (time.Time, error) {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		return time.Time{}, err
+	}
+	return time.Now().Add(-time.Duration(ts.Nano())), nil
+}
+
+func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) (err error) {
 	defer close(events)
+	defer func() { e.signal(err) }() // a failure before attaching reaches the waiter
 	if runtime.GOARCH != "amd64" {
 		return fmt.Errorf("eBPF syscall names unsupported on %s", runtime.GOARCH)
 	}
-	group, err := cgroupID(e.PID)
+	target, err := cgroupTarget(e.PID)
 	if err != nil {
 		return fmt.Errorf("target cgroup: %w", err)
+	}
+	bootWall, err := bootWallClock()
+	if err != nil {
+		return fmt.Errorf("monotonic clock: %w", err)
 	}
 	// Modern kernels account BPF maps to cgroups. A rootless container may be
 	// unable to raise RLIMIT_MEMLOCK even when the loader can still proceed.
@@ -88,46 +110,44 @@ func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) erro
 	}
 	defer collection.Close()
 	key := uint32(0)
-	if err := collection.Maps["target_cgroup"].Put(key, group); err != nil {
+	value := struct {
+		CgroupID uint64
+		Level    uint32
+		Pad      uint32
+	}{target.CgroupID, target.Level, 0}
+	if err := collection.Maps["target_cgroup"].Put(key, value); err != nil {
 		return err
 	}
+	reader, err := ringbuf.NewReader(collection.Maps["events"])
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
 	attached, err := link.AttachRawTracepoint(link.RawTracepointOptions{Name: "sys_enter", Program: collection.Programs["trace_sys_enter"]})
 	if err != nil {
 		return fmt.Errorf("attach raw tracepoint: %w", err)
 	}
 	defer attached.Close()
-	reader, err := ringbuf.NewReader(collection.Maps["events"])
-	if err != nil {
-		return err
-	}
 	e.mu.Lock()
 	e.reader = reader
-	if e.stop {
+	stopped := e.stop
+	e.mu.Unlock()
+	e.signal(nil)
+	if stopped {
 		reader.Close()
 	}
-	e.mu.Unlock()
-	defer reader.Close()
+
 	for {
 		record, err := reader.Read()
 		if errors.Is(err, ringbuf.ErrClosed) {
-			return nil
+			break
 		}
 		if err != nil {
 			return err
 		}
-		if len(record.RawSample) < 32 {
-			continue
-		}
-		number := binary.LittleEndian.Uint32(record.RawSample[24:28])
-		name, known := syscallNamesAMD64[number]
-		if !known {
-			name = "syscall_" + strconv.FormatUint(uint64(number), 10)
-		}
-		event := models.SyscallEvent{
-			Timestamp: time.Now().UTC(), Image: image,
-			PID:     int(binary.LittleEndian.Uint32(record.RawSample[16:20])),
-			TID:     int(binary.LittleEndian.Uint32(record.RawSample[20:24])),
-			Syscall: name, Number: int(number), Phase: "observed-ebpf",
+		event, ok := decodeEvent(record.RawSample, image, bootWall)
+		if !ok {
+			return fmt.Errorf("short ring buffer record (%d bytes); object and decoder disagree", len(record.RawSample))
 		}
 		select {
 		case events <- event:
@@ -135,6 +155,20 @@ func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) erro
 			return errors.New("trace consumer cannot keep up; refusing incomplete trace")
 		}
 	}
+	// The kernel side drops silently when the ring buffer is full; the per-CPU
+	// counter is the only record of it, and any drop makes the trace partial.
+	var perCPU []uint64
+	if err := collection.Maps["drops"].Lookup(key, &perCPU); err != nil {
+		return fmt.Errorf("read drop counter: %w", err)
+	}
+	var dropped uint64
+	for _, n := range perCPU {
+		dropped += n
+	}
+	if dropped > 0 {
+		return fmt.Errorf("the kernel dropped %d events (ring buffer full); refusing incomplete trace", dropped)
+	}
+	return nil
 }
 
 func (e *EBPFProbe) Detach() {

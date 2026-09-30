@@ -107,16 +107,29 @@ func runLearn(args []string) int {
 	image := fs.String("image", "", "imagen OCI a observar")
 	duration := fs.Duration("duration", 30*time.Second, "duración de la fase de aprendizaje")
 	out := fs.String("out", "autoconfine.trace.jsonl", "archivo de traza de salida")
-	pid := fs.Int("pid", 0, "PID host de un contenedor ya en ejecución (cgroup v2)")
+	fromStart := fs.Bool("from-start", false, "crear el contenedor con Podman, adjuntar la sonda y recién entonces arrancarlo (captura el arranque)")
+	keep := fs.Bool("keep", false, "con --from-start, no borrar el contenedor al terminar")
+	pid := fs.Int("pid", 0, "PID host de un contenedor ya en ejecución (cgroup v2); no captura su arranque")
 	synthetic := fs.Bool("synthetic", false, "emitir una traza simulada, explícitamente")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Uso: autoconfine learn --image IMAGEN (--from-start | --pid PID | --synthetic) [--duration 30s] [--out traza.jsonl] [-- ARGS de podman create]")
+		fs.PrintDefaults()
+	}
 	fs.Parse(args)
 
 	cfg := learn.Config{
-		Image:     *image,
-		Duration:  *duration,
-		Output:    *out,
-		PID:       *pid,
-		Synthetic: *synthetic,
+		Image:      *image,
+		Duration:   *duration,
+		Output:     *out,
+		PID:        *pid,
+		FromStart:  *fromStart,
+		Synthetic:  *synthetic,
+		CreateArgs: fs.Args(),
+		Keep:       *keep,
+	}
+	if len(cfg.CreateArgs) > 0 && !cfg.FromStart {
+		fmt.Fprintln(os.Stderr, "learn: los argumentos después de -- son para podman create y solo valen con --from-start")
+		return 1
 	}
 
 	tracer := learn.NewTracer(cfg)

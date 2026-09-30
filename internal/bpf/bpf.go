@@ -10,17 +10,26 @@ import (
 type Probe interface {
 	Attach(image string, events chan<- models.SyscallEvent) error
 	Detach()
+	// Ready entrega nil cuando la captura ya está activa, o el error si no pudo
+	// activarse. Solo después conviene arrancar el contenedor.
+	Ready() <-chan error
 }
 
 // NoopProbe simula observación para pruebas sin acceso a eBPF.
 type NoopProbe struct {
-	stop chan struct{}
+	stop  chan struct{}
+	ready chan error
 }
 
 // NewNoopProbe crea una sonda de prueba.
 func NewNoopProbe() *NoopProbe {
-	return &NoopProbe{stop: make(chan struct{})}
+	ready := make(chan error, 1)
+	ready <- nil
+	return &NoopProbe{stop: make(chan struct{}), ready: ready}
 }
+
+// Ready está listo desde el inicio: la simulación no tiene nada que cargar.
+func (n *NoopProbe) Ready() <-chan error { return n.ready }
 
 // Attach emite eventos sintéticos de syscalls comunes de contenedores.
 func (n *NoopProbe) Attach(image string, events chan<- models.SyscallEvent) error {

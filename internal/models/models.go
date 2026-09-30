@@ -14,8 +14,12 @@ type SyscallEvent struct {
 	Syscall     string    `json:"syscall"`
 	Number      int       `json:"syscall_number,omitempty"`
 	Phase       string    `json:"phase,omitempty"`
-	Result      int       `json:"result,omitempty"`
-	Errno       int       `json:"errno,omitempty"`
+	// CaptureMode says what the trace can cover: "from-exec" (attached before
+	// the container started), "attached" (joined a running container, so its
+	// startup is missing) or "synthetic".
+	CaptureMode string `json:"capture_mode,omitempty"`
+	Result      int    `json:"result,omitempty"`
+	Errno       int    `json:"errno,omitempty"`
 }
 
 // TraceSummary resume una traza aprendida.
