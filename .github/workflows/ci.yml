@@ -1,0 +1,29 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+      # The eBPF probe is Linux-only; the rest of the tool must still build.
+      - run: GOOS=darwin go build ./...
+
+  # The committed BPF object must be what the source compiles to. Debian
+  # trixie ships the clang 19 used to build it; `make bpf` maps the build
+  # path away, so the bytes match. If Debian updates clang and this fails,
+  # rebuild with `make bpf` and commit the object with the source.
+  bpf-object:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends clang make git ca-certificates
+      - uses: actions/checkout@v7
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: make bpf-check
