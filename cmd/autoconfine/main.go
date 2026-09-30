@@ -56,8 +56,8 @@ func runDrift(args []string) int {
 	fs := flag.NewFlagSet("drift", flag.ExitOnError)
 	path := fs.String("profile", "", "perfil seccomp de referencia")
 	allowSynthetic := fs.Bool("allow-synthetic", false, "aceptar una traza simulada solo para pruebas")
-	fs.Parse(args)
-	if *path == "" || fs.NArg() != 1 {
+	pos, _ := parseArgs(fs, args)
+	if *path == "" || len(pos) != 1 {
 		fmt.Fprintln(os.Stderr, "drift: usar --profile perfil.json traza.jsonl")
 		return 1
 	}
@@ -66,7 +66,7 @@ func runDrift(args []string) int {
 		fmt.Fprintf(os.Stderr, "drift: %v\n", err)
 		return 1
 	}
-	events, err := traceio.ReadEvents(fs.Arg(0))
+	events, err := traceio.ReadEvents(pos[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "drift: %v\n", err)
 		return 1
@@ -115,7 +115,11 @@ func runLearn(args []string) int {
 		fmt.Fprintln(os.Stderr, "Uso: autoconfine learn --image IMAGEN (--from-start | --pid PID | --synthetic) [--duration 30s] [--out traza.jsonl] [-- ARGS de podman create]")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	pos, createArgs := parseArgs(fs, args)
+	if len(pos) > 0 {
+		fmt.Fprintf(os.Stderr, "learn: argumento inesperado %q; las opciones de podman create van después de --\n", pos[0])
+		return 1
+	}
 
 	cfg := learn.Config{
 		Image:      *image,
@@ -124,7 +128,7 @@ func runLearn(args []string) int {
 		PID:        *pid,
 		FromStart:  *fromStart,
 		Synthetic:  *synthetic,
-		CreateArgs: fs.Args(),
+		CreateArgs: createArgs,
 		Keep:       *keep,
 	}
 	if len(cfg.CreateArgs) > 0 && !cfg.FromStart {
@@ -145,15 +149,15 @@ func runGenerate(args []string) int {
 	fs := flag.NewFlagSet("generate", flag.ExitOnError)
 	out := fs.String("out", "autoconfine.seccomp.json", "perfil seccomp de salida")
 	allowSynthetic := fs.Bool("allow-synthetic", false, "aceptar una traza simulada o sin procedencia, solo para pruebas")
-	fs.Parse(args)
+	pos, _ := parseArgs(fs, args)
 
-	if fs.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "generate: se requiere ruta de traza")
+	if len(pos) != 1 {
+		fmt.Fprintln(os.Stderr, "generate: se requiere una ruta de traza")
 		return 1
 	}
 
 	gen := generate.NewGenerator(generate.Config{AllowSynthetic: *allowSynthetic})
-	res, err := gen.Generate(fs.Arg(0), *out)
+	res, err := gen.Generate(pos[0], *out)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "generate: %v\n", err)
 		return 1
@@ -169,7 +173,10 @@ func runEnforce(args []string) int {
 	fs := flag.NewFlagSet("enforce", flag.ExitOnError)
 	profile := fs.String("profile", "", "ruta al perfil seccomp generado")
 	audit := fs.Bool("audit", false, "modo audit: reporta drift sin bloquear")
+	// Everything from the first non-flag on (or after --) is the container
+	// command, including its own flags, so no interspersed parsing here.
 	fs.Parse(args)
+	command := fs.Args()
 
 	if *profile == "" {
 		fmt.Fprintln(os.Stderr, "enforce: se requiere --profile")
@@ -183,7 +190,7 @@ func runEnforce(args []string) int {
 	}
 
 	runner := enforce.NewRunner(cfg)
-	if err := runner.Run(fs.Args()); err != nil {
+	if err := runner.Run(command); err != nil {
 		fmt.Fprintf(os.Stderr, "enforce: %v\n", err)
 		return 1
 	}
@@ -195,14 +202,14 @@ func runSummary(args []string) int {
 	defaultAllowed := fs.Int("default-allowed", 304, "syscalls permitidas por el perfil por defecto")
 	jsonOut := fs.String("json", "", "guardar análisis como JSON")
 	reportOut := fs.String("report", "", "guardar reporte markdown")
-	fs.Parse(args)
+	pos, _ := parseArgs(fs, args)
 
-	if fs.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "summary: se requiere ruta de traza")
+	if len(pos) != 1 {
+		fmt.Fprintln(os.Stderr, "summary: se requiere una ruta de traza")
 		return 1
 	}
 
-	stats, err := profile.AnalyzeTrace(fs.Arg(0), *defaultAllowed)
+	stats, err := profile.AnalyzeTrace(pos[0], *defaultAllowed)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "summary: %v\n", err)
 		return 1
@@ -219,7 +226,7 @@ func runSummary(args []string) int {
 		}
 	}
 	if *reportOut != "" {
-		if err := profile.WriteReport(stats, fs.Arg(0), *reportOut); err != nil {
+		if err := profile.WriteReport(stats, pos[0], *reportOut); err != nil {
 			fmt.Fprintf(os.Stderr, "summary report: %v\n", err)
 			return 1
 		}
@@ -229,14 +236,14 @@ func runSummary(args []string) int {
 
 func runValidate(args []string) int {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
-	fs.Parse(args)
+	pos, _ := parseArgs(fs, args)
 
-	if fs.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "validate: se requiere ruta del perfil seccomp")
+	if len(pos) != 1 {
+		fmt.Fprintln(os.Stderr, "validate: se requiere la ruta del perfil seccomp")
 		return 1
 	}
 
-	if err := profile.ValidateProfile(fs.Arg(0)); err != nil {
+	if err := profile.ValidateProfile(pos[0]); err != nil {
 		fmt.Fprintf(os.Stderr, "validate: %v\n", err)
 		return 1
 	}
@@ -247,9 +254,9 @@ func runValidate(args []string) int {
 func runCompare(args []string) int {
 	fs := flag.NewFlagSet("compare", flag.ExitOnError)
 	profiles := fs.Bool("profiles", false, "comparar como perfiles seccomp en lugar de trazas")
-	fs.Parse(args)
+	pos, _ := parseArgs(fs, args)
 
-	if fs.NArg() < 2 {
+	if len(pos) != 2 {
 		fmt.Fprintln(os.Stderr, "compare: se requieren dos rutas")
 		return 1
 	}
@@ -257,9 +264,9 @@ func runCompare(args []string) int {
 	var res *profile.CompareResult
 	var err error
 	if *profiles {
-		res, err = profile.CompareProfiles(fs.Arg(0), fs.Arg(1))
+		res, err = profile.CompareProfiles(pos[0], pos[1])
 	} else {
-		res, err = profile.CompareTraces(fs.Arg(0), fs.Arg(1))
+		res, err = profile.CompareTraces(pos[0], pos[1])
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "compare: %v\n", err)
@@ -278,14 +285,14 @@ func runCompare(args []string) int {
 func runMerge(args []string) int {
 	fs := flag.NewFlagSet("merge", flag.ExitOnError)
 	out := fs.String("out", "merged.trace.jsonl", "ruta de salida")
-	fs.Parse(args)
+	pos, _ := parseArgs(fs, args)
 
-	if fs.NArg() < 2 {
+	if len(pos) < 2 {
 		fmt.Fprintln(os.Stderr, "merge: se requieren al menos dos trazas")
 		return 1
 	}
 
-	if err := profile.MergeTraces(fs.Args(), *out); err != nil {
+	if err := profile.MergeTraces(pos, *out); err != nil {
 		fmt.Fprintf(os.Stderr, "merge: %v\n", err)
 		return 1
 	}
