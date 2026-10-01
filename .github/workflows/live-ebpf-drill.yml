@@ -1,0 +1,29 @@
+name: Disposable live eBPF drill
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/live-drill-2026-10-01]
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Verify disposable Linux runner
+        run: |
+          uname -sm
+          sudo podman --version
+          test -e /sys/kernel/btf/vmlinux
+          test -e /sys/fs/cgroup/cgroup.controllers
+      - name: Build and run startup capture plus both live drift hooks
+        run: |
+          go build -o autoconfine ./cmd/autoconfine
+          sudo bash scripts/live-ebpf-drill.sh
