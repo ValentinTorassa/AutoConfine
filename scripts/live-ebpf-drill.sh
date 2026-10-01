@@ -40,12 +40,33 @@ print("drift profile prepared")
 PY
 ./autoconfine validate "$run_dir/drift-profile.json"
 
+# The nginx trace starts at its entrypoint, so it omits syscalls that crun
+# needs before execve (for example setresgid). Use Podman's normal runtime
+# profile for the separate `id` command, then remove only its identity calls.
+default_profile="$(podman info --format '{{.Host.Security.SeccompProfilePath}}')"
+if [[ ! -f "$default_profile" ]]; then
+  echo "Podman default seccomp profile is unavailable: $default_profile" >&2
+  exit 1
+fi
+python3 - "$default_profile" "$run_dir/monitor-profile.json" <<'PY'
+import json, sys
+profile = json.load(open(sys.argv[1]))
+deny = {"getuid", "geteuid", "getgid", "getegid"}
+for rule in profile["syscalls"]:
+    rule["names"] = [name for name in rule["names"] if name not in deny]
+profile["syscalls"] = [rule for rule in profile["syscalls"] if rule["names"]]
+with open(sys.argv[2], "w") as out:
+    json.dump(profile, out)
+print("monitor profile prepared from Podman default")
+PY
+./autoconfine validate "$run_dir/monitor-profile.json"
+
 set +e
 ./autoconfine enforce --profile "$run_dir/drift-profile.json" --audit \
   --out "$run_dir/audit.jsonl" -- podman run --rm --entrypoint /bin/sh \
   "$image" -c 'id >/dev/null'
 audit_rc=$?
-./autoconfine enforce --profile "$run_dir/drift-profile.json" --monitor \
+./autoconfine enforce --profile "$run_dir/monitor-profile.json" --monitor \
   --out "$run_dir/monitor.jsonl" -- podman run --rm --entrypoint /bin/sh \
   "$image" -c 'id >/dev/null'
 monitor_rc=$?
