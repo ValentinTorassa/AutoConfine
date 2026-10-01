@@ -43,9 +43,16 @@ PY
 # The nginx trace starts at its entrypoint, so it omits syscalls that crun
 # needs before execve (for example setresgid). Use Podman's normal runtime
 # profile for the separate `id` command, then remove only its identity calls.
-default_profile="$(podman info --format '{{.Host.Security.SeccompProfilePath}}')"
-if [[ ! -f "$default_profile" ]]; then
-  echo "Podman default seccomp profile is unavailable: $default_profile" >&2
+default_profile=
+for candidate in /usr/share/containers/seccomp.json /etc/containers/seccomp.json; do
+  if [[ -f "$candidate" ]]; then
+    default_profile="$candidate"
+    break
+  fi
+done
+if [[ -z "$default_profile" ]]; then
+  echo "Podman default seccomp profile is unavailable" >&2
+  find /usr/share/containers /etc/containers -maxdepth 2 -iname '*seccomp*' -print 2>/dev/null || true
   exit 1
 fi
 python3 - "$default_profile" "$run_dir/monitor-profile.json" <<'PY'
