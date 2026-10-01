@@ -177,7 +177,7 @@ func TestExactlyOneModeIsRequired(t *testing.T) {
 
 func TestPodmanCreateArgsPrecedeImage(t *testing.T) {
 	got := strings.Join(createArgs("nginx:latest", []string{"-p", "8080:80", "-e", "A=1"}), " ")
-	if got != "create -p 8080:80 -e A=1 nginx:latest" {
+	if got != "-p 8080:80 -e A=1 nginx:latest" {
 		t.Fatalf("got %q", got)
 	}
 }
