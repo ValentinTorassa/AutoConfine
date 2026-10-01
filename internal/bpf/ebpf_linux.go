@@ -134,12 +134,12 @@ func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) (err
 	e.mu.Unlock()
 	e.signal(nil)
 	if stopped {
-		reader.Close()
+		_ = reader.Flush()
 	}
 
 	for {
 		record, err := reader.Read()
-		if errors.Is(err, ringbuf.ErrClosed) {
+		if errors.Is(err, ringbuf.ErrFlushed) || errors.Is(err, ringbuf.ErrClosed) {
 			break
 		}
 		if err != nil {
@@ -171,11 +171,15 @@ func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) (err
 	return nil
 }
 
+// Detach ends the capture. It flushes the reader instead of closing it, so the
+// records already in the ring buffer still reach the consumer before Attach
+// returns: closing discarded them, and the last syscalls before a container
+// exits are often the ones that explain why it did.
 func (e *EBPFProbe) Detach() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.stop = true
 	if e.reader != nil {
-		e.reader.Close()
+		_ = e.reader.Flush()
 	}
 }
