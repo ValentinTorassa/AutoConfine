@@ -1,6 +1,7 @@
 name: Disposable live eBPF drill
 
 on:
+  workflow_dispatch:
   push:
     branches: [codex/live-drill-2026-10-01]
 
