@@ -66,6 +66,7 @@ func decodeEvent(raw []byte, image string, bootWall time.Time) (models.SyscallEv
 		Comm:      string(comm),
 		Syscall:   name,
 		Number:    int(number),
+		Errno:     int(binary.LittleEndian.Uint32(raw[28:32])), // sys_exit only
 		Phase:     "observed-ebpf",
 	}, true
 }

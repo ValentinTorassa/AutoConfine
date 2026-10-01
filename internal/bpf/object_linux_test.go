@@ -4,9 +4,13 @@ package bpf
 
 import (
 	"bytes"
+	"errors"
+	"os"
+	"runtime"
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 )
 
 // Parsing the embedded object needs no privileges; it catches an object that
@@ -16,8 +20,14 @@ func TestEmbeddedObjectMatchesDecoder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Programs["trace_sys_enter"] == nil {
-		t.Fatal("program trace_sys_enter missing")
+	for hook, program := range programs {
+		p := spec.Programs[program.name]
+		if p == nil {
+			t.Fatalf("hook %d: program %s missing", hook, program.name)
+		}
+		if p.Type != ebpf.RawTracepoint || p.SectionName != "raw_tracepoint/"+program.tracepoint {
+			t.Errorf("program %s: type %v section %s", program.name, p.Type, p.SectionName)
+		}
 	}
 	want := map[string]struct {
 		typ       ebpf.MapType
@@ -39,4 +49,32 @@ func TestEmbeddedObjectMatchesDecoder(t *testing.T) {
 	if bytes.Contains(syscallObject, []byte("/home/")) {
 		t.Error("the committed object embeds a home directory path; rebuild with make bpf")
 	}
+}
+
+// trace_sys_exit reads the syscall number at PT_REGS_ORIG_AX (120) in
+// syscalls.bpf.c; reading the kernel's BTF needs no privileges.
+func TestPtRegsOrigAXOffset(t *testing.T) {
+	if runtime.GOARCH != "amd64" {
+		t.Skip("the probe only names amd64 syscalls")
+	}
+	spec, err := btf.LoadKernelSpec()
+	if errors.Is(err, ebpf.ErrNotSupported) || errors.Is(err, os.ErrPermission) {
+		t.Skipf("no kernel BTF: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var regs *btf.Struct
+	if err := spec.TypeByName("pt_regs", &regs); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range regs.Members {
+		if m.Name == "orig_ax" {
+			if got := m.Offset.Bytes(); got != 120 {
+				t.Fatalf("pt_regs.orig_ax at %d, the probe reads 120", got)
+			}
+			return
+		}
+	}
+	t.Fatal("pt_regs has no orig_ax")
 }

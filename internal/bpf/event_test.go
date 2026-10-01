@@ -29,6 +29,13 @@ func TestDecodeEventUsesKernelTimestampAndComm(t *testing.T) {
 	if event.Comm != "nginx" || event.Phase != "observed-ebpf" || event.Image != "nginx:latest" {
 		t.Fatalf("event %+v", event)
 	}
+	if event.Errno != 0 {
+		t.Fatalf("errno %d from a record without one", event.Errno)
+	}
+	binary.LittleEndian.PutUint32(raw[28:32], 1) // sys_exit of a call denied with EPERM
+	if event, _ := decodeEvent(raw, "x", boot); event.Errno != 1 {
+		t.Fatalf("errno %d, want 1", event.Errno)
+	}
 	if _, ok := decodeEvent(raw[:32], "x", boot); ok {
 		t.Fatal("a 32-byte record from the old object must not decode")
 	}

@@ -12,6 +12,7 @@ import (
 // features. The type exists so the rest of the tool builds everywhere.
 type EBPFProbe struct {
 	PID   int
+	Hook  Hook
 	ready chan error
 }
 

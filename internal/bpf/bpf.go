@@ -6,6 +6,19 @@ import (
 	"github.com/ValentinTorassa/autoconfine/internal/models"
 )
 
+// Hook is the syscall tracepoint a probe records at.
+type Hook int
+
+const (
+	// SysEnter sees every syscall that seccomp lets run: all of them when no
+	// profile is applied (learn) or when the profile only logs (audit).
+	SysEnter Hook = iota
+	// SysExit also sees the syscalls a profile denies with an errno, which
+	// seccomp keeps from reaching sys_enter but which still return. A call
+	// that never returns (exit, exit_group, a killed process) is not seen.
+	SysExit
+)
+
 // Probe define la interfaz para observar syscalls.
 type Probe interface {
 	Attach(image string, events chan<- models.SyscallEvent) error

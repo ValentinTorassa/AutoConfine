@@ -29,6 +29,7 @@ var syscallObject []byte
 // EBPFProbe records the syscalls of one container cgroup subtree.
 type EBPFProbe struct {
 	PID   int
+	Hook  Hook // SysEnter unless set
 	mu    sync.Mutex
 	ready chan error
 	once  sync.Once
@@ -38,6 +39,13 @@ type EBPFProbe struct {
 }
 
 func NewEBPFProbe(pid int) *EBPFProbe { return &EBPFProbe{PID: pid, ready: make(chan error, 1)} }
+
+// programs maps each hook to its program in syscalls.bpf.c and the raw
+// tracepoint it attaches to.
+var programs = map[Hook]struct{ name, tracepoint string }{
+	SysEnter: {"trace_sys_enter", "sys_enter"},
+	SysExit:  {"trace_sys_exit", "sys_exit"},
+}
 
 // Ready delivers nil once the program is attached (or the error that stopped
 // it), so a caller starts the container only after capture is live.
@@ -89,6 +97,10 @@ func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) (err
 	if runtime.GOARCH != "amd64" {
 		return fmt.Errorf("eBPF syscall names unsupported on %s", runtime.GOARCH)
 	}
+	program, ok := programs[e.Hook]
+	if !ok {
+		return fmt.Errorf("unknown hook %d", e.Hook)
+	}
 	target, err := cgroupTarget(e.PID)
 	if err != nil {
 		return fmt.Errorf("target cgroup: %w", err)
@@ -103,6 +115,13 @@ func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) (err
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(syscallObject))
 	if err != nil {
 		return fmt.Errorf("load eBPF object: %w", err)
+	}
+	// Load only the program in use, so the other one never has to pass the
+	// verifier for this capture to work.
+	for name := range spec.Programs {
+		if name != program.name {
+			delete(spec.Programs, name)
+		}
 	}
 	collection, err := ebpf.NewCollection(spec)
 	if err != nil {
@@ -123,7 +142,7 @@ func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) (err
 		return err
 	}
 	defer reader.Close()
-	attached, err := link.AttachRawTracepoint(link.RawTracepointOptions{Name: "sys_enter", Program: collection.Programs["trace_sys_enter"]})
+	attached, err := link.AttachRawTracepoint(link.RawTracepointOptions{Name: program.tracepoint, Program: collection.Programs[program.name]})
 	if err != nil {
 		return fmt.Errorf("attach raw tracepoint: %w", err)
 	}
@@ -155,8 +174,9 @@ func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) (err
 			return errors.New("trace consumer cannot keep up; refusing incomplete trace")
 		}
 	}
-	// The kernel side drops silently when the ring buffer is full; the per-CPU
-	// counter is the only record of it, and any drop makes the trace partial.
+	// The kernel side drops silently when the ring buffer is full (or, at
+	// sys_exit, when it cannot read the syscall number); the per-CPU counter
+	// is the only record of it, and any drop makes the trace partial.
 	var perCPU []uint64
 	if err := collection.Maps["drops"].Lookup(key, &perCPU); err != nil {
 		return fmt.Errorf("read drop counter: %w", err)
@@ -166,7 +186,7 @@ func (e *EBPFProbe) Attach(image string, events chan<- models.SyscallEvent) (err
 		dropped += n
 	}
 	if dropped > 0 {
-		return fmt.Errorf("the kernel dropped %d events (ring buffer full); refusing incomplete trace", dropped)
+		return fmt.Errorf("the kernel dropped %d events (ring buffer full or unreadable syscall number); refusing incomplete trace", dropped)
 	}
 	return nil
 }
