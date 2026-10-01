@@ -22,6 +22,11 @@ type SyscallEvent struct {
 	Errno       int    `json:"errno,omitempty"`
 }
 
+// IsExec reports whether the event starts a program. A container's seccomp
+// profile applies from its entrypoint's execve on; before it, the OCI
+// runtime is still setting the container up.
+func (e SyscallEvent) IsExec() bool { return e.Syscall == "execve" || e.Syscall == "execveat" }
+
 // TraceSummary resume una traza aprendida.
 type TraceSummary struct {
 	Image            string   `json:"image"`

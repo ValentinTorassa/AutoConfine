@@ -172,7 +172,13 @@ func runGenerate(args []string) int {
 func runEnforce(args []string) int {
 	fs := flag.NewFlagSet("enforce", flag.ExitOnError)
 	profile := fs.String("profile", "", "ruta al perfil seccomp generado")
-	audit := fs.Bool("audit", false, "modo audit: reporta drift sin bloquear")
+	monitor := fs.Bool("monitor", false, "observar el contenedor con eBPF mientras corre y reportar en vivo cada syscall que el perfil deniega (root y Podman)")
+	audit := fs.Bool("audit", false, "modo audit: aplicar el perfil con SCMP_ACT_LOG (no bloquea) y reportar en vivo cada syscall fuera de él; implica --monitor")
+	out := fs.String("out", "", "con --monitor o --audit, archivo JSONL para los eventos de drift (por defecto stderr)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Uso: autoconfine enforce --profile PERFIL [--monitor | --audit] [--out drift.jsonl] -- podman run [OPCIONES] IMAGEN [COMANDO]")
+		fs.PrintDefaults()
+	}
 	// Everything from the first non-flag on (or after --) is the container
 	// command, including its own flags, so no interspersed parsing here.
 	fs.Parse(args)
@@ -182,16 +188,41 @@ func runEnforce(args []string) int {
 		fmt.Fprintln(os.Stderr, "enforce: se requiere --profile")
 		return 1
 	}
+	monitoring := *monitor || *audit
+	if *out != "" && !monitoring {
+		fmt.Fprintln(os.Stderr, "enforce: --out solo vale con --monitor o --audit")
+		return 1
+	}
+	// stdout belongs to the container, so drift reports go to stderr or --out.
+	reporter := drift.NewJSONReporter(os.Stderr)
+	if *out != "" {
+		file, err := os.Create(*out)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "enforce: %v\n", err)
+			return 1
+		}
+		defer file.Close()
+		reporter = drift.NewJSONReporter(file)
+	}
 
 	cfg := enforce.Config{
 		ProfilePath:   *profile,
+		Monitor:       monitoring,
 		Audit:         *audit,
-		DriftReporter: drift.NewJSONReporter(os.Stdout),
+		DriftReporter: reporter,
 	}
 
 	runner := enforce.NewRunner(cfg)
-	if err := runner.Run(command); err != nil {
+	summary, err := runner.Run(command)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "enforce: %v\n", err)
+	}
+	// Like drift: 2 when a syscall fell outside the profile, even if the
+	// container then failed (often because of it).
+	if summary != nil && summary.Outside > 0 {
+		return 2
+	}
+	if err != nil {
 		return 1
 	}
 	return 0

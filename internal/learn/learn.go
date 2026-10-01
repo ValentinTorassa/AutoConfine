@@ -81,9 +81,6 @@ func (t *Tracer) captureMode() string {
 	}
 }
 
-// isExec reports the syscalls that start the container's entrypoint.
-func isExec(name string) bool { return name == "execve" || name == "execveat" }
-
 // Run ejecuta el aprendizaje y persiste la traza.
 func (t *Tracer) Run() (err error) {
 	if err := t.validate(); err != nil {
@@ -156,7 +153,7 @@ func (t *Tracer) Run() (err error) {
 		started := !t.cfg.FromStart
 		for evt := range events {
 			if !started {
-				if !isExec(evt.Syscall) {
+				if !evt.IsExec() {
 					continue
 				}
 				started = true

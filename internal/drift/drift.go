@@ -15,6 +15,11 @@ type Event struct {
 	PID         int       `json:"pid,omitempty"`
 	Comm        string    `json:"comm,omitempty"`
 	Profile     string    `json:"profile,omitempty"`
+	// Live monitoring only: what the applied profile does with the call
+	// (SCMP_ACT_ERRNO denies it, SCMP_ACT_LOG in audit mode lets it run),
+	// and the errno it returned when the probe saw it at sys_exit.
+	Action string `json:"action,omitempty"`
+	Errno  int    `json:"errno,omitempty"`
 }
 
 // Reporter escribe eventos de drift.

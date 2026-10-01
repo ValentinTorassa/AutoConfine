@@ -26,7 +26,7 @@ func TestLoadProfile(t *testing.T) {
 
 func TestRunnerMissingProfile(t *testing.T) {
 	r := NewRunner(Config{ProfilePath: "/no/existe.json"})
-	err := r.Run([]string{"podman", "run", "nginx"})
+	_, err := r.Run([]string{"podman", "run", "nginx"})
 	if err == nil {
 		t.Fatal("se esperaba error por perfil inexistente")
 	}
