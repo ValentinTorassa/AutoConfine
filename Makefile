@@ -1,4 +1,4 @@
-.PHONY: build test vet bpf bpf-check clean run-learn run-learn-pid run-generate run-enforce
+.PHONY: build test vet bpf bpf-check clean run-learn run-learn-pid run-generate run-enforce run-monitor run-audit
 
 BINARY := autoconfine
 CMD := ./cmd/autoconfine
@@ -44,3 +44,13 @@ run-generate: build
 
 run-enforce: build
 	./$(BINARY) enforce --profile nginx.seccomp.json -- podman run --rm nginx
+
+# Needs root (or CAP_BPF + CAP_PERFMON) and Podman: runs nginx under the
+# profile and reports each syscall it denies as it happens. Ctrl-C stops
+# nginx and prints the summary; the exit code is 2 if anything was denied.
+run-monitor: build
+	sudo ./$(BINARY) enforce --profile nginx.seccomp.json --monitor -- podman run --rm nginx
+
+# Same, but the profile only logs (SCMP_ACT_LOG), so nothing is denied.
+run-audit: build
+	sudo ./$(BINARY) enforce --profile nginx.seccomp.json --audit -- podman run --rm nginx
