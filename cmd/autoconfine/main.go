@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/ValentinTorassa/autoconfine/internal/config"
@@ -112,14 +114,29 @@ func runLearn(args []string) int {
 	pid := fs.Int("pid", 0, "PID host de un contenedor ya en ejecución (cgroup v2); no captura su arranque")
 	synthetic := fs.Bool("synthetic", false, "emitir una traza simulada, explícitamente")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Uso: autoconfine learn --image IMAGEN (--from-start | --pid PID | --synthetic) [--duration 30s] [--out traza.jsonl] [-- ARGS de podman create]")
+		fmt.Fprintln(os.Stderr, "Uso: autoconfine learn --image IMAGEN (--from-start | --pid PID | --synthetic) [--duration 30s] [--out traza.jsonl] [-- ARGS de podman create [-- COMANDO del contenedor]]")
+		fmt.Fprintln(os.Stderr, "--duration es el máximo: SIGINT o SIGTERM cortan la captura antes y guardan lo observado.")
 		fs.PrintDefaults()
 	}
-	pos, createArgs := parseArgs(fs, args)
+	pos, passthrough := parseArgs(fs, args)
 	if len(pos) > 0 {
 		fmt.Fprintf(os.Stderr, "learn: argumento inesperado %q; las opciones de podman create van después de --\n", pos[0])
 		return 1
 	}
+	createArgs, command := splitCommand(passthrough)
+
+	// The first SIGINT or SIGTERM ends the capture early and keeps the trace;
+	// after it the default handling is back, so a second one kills learn.
+	stop := make(chan struct{})
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	go func() {
+		sig := <-signals
+		signal.Reset(os.Interrupt, syscall.SIGTERM)
+		fmt.Fprintf(os.Stderr, "learn: %v recibida; se corta la captura y se guarda lo observado (otra señal la aborta)\n", sig)
+		close(stop)
+	}()
 
 	cfg := learn.Config{
 		Image:      *image,
@@ -129,9 +146,11 @@ func runLearn(args []string) int {
 		FromStart:  *fromStart,
 		Synthetic:  *synthetic,
 		CreateArgs: createArgs,
+		Command:    command,
 		Keep:       *keep,
+		Stop:       stop,
 	}
-	if len(cfg.CreateArgs) > 0 && !cfg.FromStart {
+	if len(passthrough) > 0 && !cfg.FromStart {
 		fmt.Fprintln(os.Stderr, "learn: los argumentos después de -- son para podman create y solo valen con --from-start")
 		return 1
 	}

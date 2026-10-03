@@ -24,3 +24,18 @@ func TestParseArgsKeepsEverythingAfterDoubleDash(t *testing.T) {
 		t.Fatalf("profile=%s pos=%v pass=%v", *profile, pos, pass)
 	}
 }
+
+func TestSplitCommandSeparatesCreateOptionsFromCommand(t *testing.T) {
+	create, command := splitCommand([]string{"-p", "8080:80", "--", "sh", "-c", "x", "--", "y"})
+	if strings.Join(create, " ") != "-p 8080:80" || strings.Join(command, " ") != "sh -c x -- y" {
+		t.Fatalf("create=%v command=%v", create, command)
+	}
+	create, command = splitCommand([]string{"-p", "8080:80"})
+	if strings.Join(create, " ") != "-p 8080:80" || command != nil {
+		t.Fatalf("without a second -- everything is a create option: create=%v command=%v", create, command)
+	}
+	create, command = splitCommand([]string{"--", "true"})
+	if len(create) != 0 || strings.Join(command, " ") != "true" {
+		t.Fatalf("command only: create=%v command=%v", create, command)
+	}
+}

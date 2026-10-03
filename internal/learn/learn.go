@@ -21,9 +21,15 @@ type Config struct {
 	PID       int  // adjuntarse a un contenedor ya en ejecución (se pierde el arranque)
 	FromStart bool // crear el contenedor, adjuntarse y recién entonces arrancarlo
 	Synthetic bool // traza simulada, solo para pruebas
-	// FromStart: argumentos de `podman create` antes de la imagen, y si se conserva.
+	// FromStart: argumentos de `podman create` antes de la imagen, comando
+	// del contenedor después de ella (vacío: el de la imagen), y si se conserva.
 	CreateArgs []string
+	Command    []string
 	Keep       bool
+	// Stop, when closed, ends the capture before Duration and keeps what was
+	// recorded (the CLI closes it on SIGINT or SIGTERM). If it is closed
+	// before the container starts, the container is never started.
+	Stop <-chan struct{}
 }
 
 // Tracer encapsula la observación de syscalls.
@@ -89,7 +95,7 @@ func (t *Tracer) Run() (err error) {
 	pid := t.cfg.PID
 	containerID := ""
 	if t.cfg.FromStart {
-		containerID, err = t.runtime.Create(t.cfg.Image, t.cfg.CreateArgs)
+		containerID, err = t.runtime.Create(t.cfg.Image, t.cfg.CreateArgs, t.cfg.Command)
 		if err != nil {
 			return fmt.Errorf("crear contenedor: %w", err)
 		}
@@ -171,6 +177,13 @@ func (t *Tracer) Run() (err error) {
 	}()
 
 	if t.cfg.FromStart {
+		if t.stopped() {
+			probe.Detach()
+			<-written
+			<-raised
+			file.Close()
+			return errors.New("captura cancelada antes de arrancar el contenedor; no se guarda traza")
+		}
 		if err := t.runtime.Start(containerID); err != nil {
 			probe.Detach()
 			<-written
@@ -179,7 +192,14 @@ func (t *Tracer) Run() (err error) {
 			return fmt.Errorf("arrancar contenedor: %w", err)
 		}
 	}
-	time.Sleep(t.cfg.Duration)
+	// Duration is the upper bound; Stop ends the capture sooner, for example
+	// once a test suite driving the container has finished.
+	timer := time.NewTimer(t.cfg.Duration)
+	select {
+	case <-timer.C:
+	case <-t.cfg.Stop: // a nil channel never fires
+		timer.Stop()
+	}
 	probe.Detach()
 
 	res := <-written
@@ -206,6 +226,16 @@ func (t *Tracer) Run() (err error) {
 		return err
 	}
 	return os.Rename(t.cfg.Output+".tmp", t.cfg.Output)
+}
+
+// stopped reports whether Stop has already been closed.
+func (t *Tracer) stopped() bool {
+	select {
+	case <-t.cfg.Stop:
+		return true
+	default:
+		return false
+	}
 }
 
 func drain(events <-chan models.SyscallEvent) {

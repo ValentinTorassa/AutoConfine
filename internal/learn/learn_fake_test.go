@@ -34,8 +34,12 @@ type fakeRuntime struct {
 	startErr error
 }
 
-func (f *fakeRuntime) Create(image string, args []string) (string, error) {
-	f.log.add("create:" + image + ":" + strings.Join(args, " "))
+func (f *fakeRuntime) Create(image string, args, command []string) (string, error) {
+	step := "create:" + image + ":" + strings.Join(args, " ")
+	if len(command) > 0 {
+		step += ":" + strings.Join(command, " ")
+	}
+	f.log.add(step)
 	return "c1", nil
 }
 func (f *fakeRuntime) Init(id string) (int, error) { f.log.add("init"); return 4242, nil }
@@ -57,6 +61,7 @@ type fakeProbe struct {
 	attachErr error
 	stop      chan struct{}
 	once      sync.Once
+	emitted   chan struct{} // closed, if set, once the events are sent
 }
 
 func (p *fakeProbe) Ready() <-chan error { return p.ready }
@@ -76,6 +81,9 @@ func (p *fakeProbe) Attach(image string, events chan<- models.SyscallEvent) erro
 	}
 	for _, name := range []string{"futex", "read", "execve", "brk", "openat", "bind"} {
 		events <- models.SyscallEvent{Syscall: name, Phase: "observed-ebpf", PID: 4242}
+	}
+	if p.emitted != nil {
+		close(p.emitted)
 	}
 	<-p.stop
 	return nil
@@ -176,8 +184,67 @@ func TestExactlyOneModeIsRequired(t *testing.T) {
 }
 
 func TestPodmanCreateArgsPrecedeImage(t *testing.T) {
-	got := strings.Join(createArgs("nginx:latest", []string{"-p", "8080:80", "-e", "A=1"}), " ")
+	got := strings.Join(createArgs("nginx:latest", []string{"-p", "8080:80", "-e", "A=1"}, nil), " ")
 	if got != "-p 8080:80 -e A=1 nginx:latest" {
 		t.Fatalf("got %q", got)
+	}
+	got = strings.Join(createArgs("nginx:latest", []string{"-p", "8080:80"}, []string{"nginx", "-g", "daemon off;"}), "|")
+	if got != "-p|8080:80|nginx:latest|nginx|-g|daemon off;" {
+		t.Fatalf("the command must follow the image: %q", got)
+	}
+}
+
+func TestStopEndsCaptureEarlyAndKeepsTrace(t *testing.T) {
+	log := &stepLog{}
+	started := make(chan struct{})
+	emitted := make(chan struct{})
+	stop := make(chan struct{})
+	rt := &fakeRuntime{log: log, started: started}
+	probe := &fakeProbe{log: log, started: started, ready: make(chan error, 1), stop: make(chan struct{}), emitted: emitted}
+	out := filepath.Join(t.TempDir(), "trace.jsonl")
+	cfg := Config{Image: "nginx", Duration: time.Hour, Output: out, FromStart: true,
+		Command: []string{"nginx", "-g", "daemon off;"}, Stop: stop}
+	tr, _ := newFakeTracer(t, cfg, rt, probe)
+	go func() { <-emitted; close(stop) }()
+
+	done := make(chan error, 1)
+	go func() { done <- tr.Run() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop did not end the capture before Duration")
+	}
+	if got := log.String(); got != "create:nginx::nginx -g daemon off;,init,attach,start,remove" {
+		t.Fatalf("steps %s", got)
+	}
+	events, err := traceio.ReadEvents(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 4 || events[0].Syscall != "execve" {
+		t.Fatalf("an early stop keeps what was recorded from the execve on: %+v", events)
+	}
+}
+
+func TestStopBeforeStartNeverStartsTheContainer(t *testing.T) {
+	log := &stepLog{}
+	stop := make(chan struct{})
+	close(stop)
+	rt := &fakeRuntime{log: log, started: make(chan struct{})}
+	probe := &fakeProbe{log: log, started: rt.started, ready: make(chan error, 1), stop: make(chan struct{})}
+	out := filepath.Join(t.TempDir(), "trace.jsonl")
+	tr, _ := newFakeTracer(t, Config{Image: "nginx", Duration: time.Hour, Output: out, FromStart: true, Stop: stop}, rt, probe)
+
+	if err := tr.Run(); err == nil {
+		t.Fatal("a capture stopped before the container started must not report success")
+	}
+	if got := log.String(); got != "create:nginx:,init,attach,remove" {
+		t.Fatalf("steps %s: the container must not start once stopped", got)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("no trace should be saved")
 	}
 }

@@ -23,3 +23,17 @@ func parseArgs(fs *flag.FlagSet, args []string) (positional, passthrough []strin
 		args = args[1:]
 	}
 }
+
+// splitCommand separates learn's passthrough arguments at the next "--":
+// `podman create` options before it, the container command after it, so
+// `learn ... -- -p 8080:80 -- nginx -g 'daemon off;'` creates the container
+// with that command instead of the image's. Any later "--" is part of the
+// command.
+func splitCommand(passthrough []string) (createArgs, command []string) {
+	for i, arg := range passthrough {
+		if arg == "--" {
+			return passthrough[:i], passthrough[i+1:]
+		}
+	}
+	return passthrough, nil
+}
