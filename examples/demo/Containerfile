@@ -1,0 +1,5 @@
+# A one-shot container for the Action demo: it runs a small self-test and
+# exits, the way a test suite baked into an image would.
+FROM docker.io/library/alpine:3.20
+COPY selftest.sh /usr/local/bin/selftest
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/selftest"]

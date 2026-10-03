@@ -1,0 +1,215 @@
+name: AutoConfine seccomp profile
+description: >-
+  Learn the syscalls a container makes while your tests run (eBPF, from the
+  entrypoint's execve), generate a least-privilege seccomp profile, report the
+  reduction against the runtime's default profile on the pull request, and
+  optionally fail when the container needs syscalls a committed profile lacks.
+author: Valentín Torassa Colombero
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  image:
+    description: >-
+      Container image to learn. Use a fully qualified name
+      (docker.io/library/nginx:alpine). It is pulled into root Podman storage,
+      or copied there if an earlier step built it with Docker.
+    required: true
+  command:
+    description: >-
+      Container command, replacing the image's default command. Split into
+      words like a shell would (quotes respected, nothing expanded).
+    required: false
+    default: ''
+  create-args:
+    description: >-
+      Extra `podman create` options, such as `-p 8080:80 -e MODE=test`, split
+      the same way. `--name`, `--rm` and `--` are reserved by the action.
+    required: false
+    default: ''
+  test-command:
+    description: >-
+      Your test command, run on the runner with `bash -eo pipefail` once the
+      container is running; the capture ends when it exits, and a failure
+      fails the action. AUTOCONFINE_CONTAINER holds the container name (for
+      `sudo podman exec`). Leave empty to capture until the container exits.
+    required: false
+    default: ''
+  timeout:
+    description: >-
+      Upper bound for the capture, as a Go duration (90s, 10m). If the test
+      command is still running when it expires, the action fails.
+    required: false
+    default: 10m
+  runtime:
+    description: >-
+      Container runtime. Only `podman` is supported: capture from the start
+      needs `podman init`, which Docker has no equivalent for.
+    required: false
+    default: podman
+  default-profile:
+    description: >-
+      Seccomp profile the reduction is measured against. Empty uses Podman's
+      default profile on the runner (/usr/share/containers/seccomp.json).
+    required: false
+    default: ''
+  output:
+    description: Where to write the generated profile, relative to the workspace.
+    required: false
+    default: autoconfine.seccomp.json
+  drift-profile:
+    description: >-
+      Committed profile to check this capture against. Every syscall the
+      container made that it does not allow is reported as drift.
+    required: false
+    default: ''
+  fail-on-drift:
+    description: Fail the job when the drift check finds syscalls outside `drift-profile`.
+    required: false
+    default: 'true'
+  comment:
+    description: >-
+      Post the report on the pull request, updating this action's earlier
+      comment for the same `output` instead of adding a new one.
+    required: false
+    default: 'true'
+  github-token:
+    description: "Token for the pull request comment; it needs `pull-requests: write`."
+    required: false
+    default: ${{ github.token }}
+  artifact-name:
+    description: >-
+      Name of the uploaded artifact (profile, trace, report, logs). It must be
+      unique within the workflow run.
+    required: false
+    default: autoconfine-profile
+  setup-go:
+    description: >-
+      Install Go with actions/setup-go to build AutoConfine. Set to false when
+      Go 1.22 or later is already on PATH.
+    required: false
+    default: 'true'
+
+outputs:
+  profile:
+    description: Path of the generated seccomp profile.
+    value: ${{ steps.report.outputs.profile }}
+  trace:
+    description: Path of the captured trace (JSONL).
+    value: ${{ steps.report.outputs.trace }}
+  report:
+    description: Path of the Markdown report posted as the comment and job summary.
+    value: ${{ steps.report.outputs.report }}
+  syscalls:
+    description: Number of syscalls the generated profile allows.
+    value: ${{ steps.report.outputs.syscalls }}
+  default-syscalls:
+    description: Number of syscall names the default profile allows.
+    value: ${{ steps.report.outputs.default-syscalls }}
+  reduction:
+    description: Percentage of the default profile's syscalls that the generated profile leaves out, one decimal.
+    value: ${{ steps.report.outputs.reduction }}
+  drift-status:
+    description: "`clean`, `found` or `skipped` (no drift-profile)."
+    value: ${{ steps.report.outputs.drift-status }}
+  new-syscalls:
+    description: Comma-separated syscalls the container made that drift-profile does not allow.
+    value: ${{ steps.report.outputs.new-syscalls }}
+  artifact-url:
+    description: URL of the uploaded artifact.
+    value: ${{ steps.upload.outputs.artifact-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the runner
+      id: setup
+      shell: bash
+      env:
+        AC_RUNTIME: ${{ inputs.runtime }}
+        AC_DEFAULT_PROFILE: ${{ inputs.default-profile }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/action/autoconfine_action.py" setup
+
+    - name: Set up Go
+      if: inputs.setup-go == 'true'
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache: false
+
+    - name: Build AutoConfine
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        AC_BIN: ${{ steps.setup.outputs.bin }}
+      run: |
+        go build -trimpath -o "$AC_BIN" ./cmd/autoconfine
+        "$AC_BIN" version
+
+    - name: Prepare the image
+      shell: bash
+      env:
+        AC_IMAGE: ${{ inputs.image }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/action/autoconfine_action.py" image
+
+    - name: Learn while the tests run
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        AC_BIN: ${{ steps.setup.outputs.bin }}
+        AC_OUT_DIR: ${{ steps.setup.outputs.dir }}
+        AC_IMAGE: ${{ inputs.image }}
+        AC_COMMAND: ${{ inputs.command }}
+        AC_CREATE_ARGS: ${{ inputs.create-args }}
+        AC_TEST_COMMAND: ${{ inputs.test-command }}
+        AC_TIMEOUT: ${{ inputs.timeout }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/action/autoconfine_action.py" learn
+
+    - name: Generate the profile and the report
+      id: report
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        AC_BIN: ${{ steps.setup.outputs.bin }}
+        AC_OUT_DIR: ${{ steps.setup.outputs.dir }}
+        AC_OUTPUT: ${{ inputs.output }}
+        AC_DEFAULT_PROFILE: ${{ steps.setup.outputs.default-profile }}
+        AC_DRIFT_PROFILE: ${{ inputs.drift-profile }}
+        AC_IMAGE: ${{ inputs.image }}
+        AC_COMMAND: ${{ inputs.command }}
+        AC_TEST_COMMAND: ${{ inputs.test-command }}
+        AC_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        AC_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/action/autoconfine_action.py" report
+
+    # Also after a failed capture, so learn.log and any partial trace can be read.
+    - name: Upload the profile, trace and logs
+      id: upload
+      if: ${{ !cancelled() && steps.setup.outputs.dir != '' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.setup.outputs.dir }}
+        if-no-files-found: warn
+
+    - name: Comment on the pull request
+      if: inputs.comment == 'true' && github.event.pull_request.number
+      shell: bash
+      env:
+        AC_TOKEN: ${{ inputs.github-token }}
+        AC_PR_NUMBER: ${{ github.event.pull_request.number }}
+        AC_REPORT: ${{ steps.report.outputs.report }}
+        AC_MARKER_KEY: ${{ inputs.output }}
+        AC_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/action/autoconfine_action.py" comment
+
+    - name: Fail on drift
+      if: steps.report.outputs.drift-status == 'found' && inputs.fail-on-drift == 'true'
+      shell: bash
+      env:
+        AC_NEW: ${{ steps.report.outputs.new-syscalls }}
+        AC_DRIFT_PROFILE: ${{ inputs.drift-profile }}
+      run: |
+        echo "::error title=AutoConfine::syscalls outside $AC_DRIFT_PROFILE: $AC_NEW"
+        exit 1

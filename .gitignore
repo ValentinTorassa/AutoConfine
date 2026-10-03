@@ -28,3 +28,6 @@ coverage.out
 *.o
 *.bpf.o
 !internal/bpf/syscalls_bpfel.o
+
+# Python
+__pycache__/

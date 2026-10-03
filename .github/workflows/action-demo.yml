@@ -1,0 +1,144 @@
+name: Action demo
+
+# Exercises action.yml from this checkout (uses: ./) on the runner the live
+# eBPF drill verified: ubuntu-26.04, rootful Podman through sudo, cgroup v2.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  service:
+    name: Service driven by a test command
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write # the report comment
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify disposable Linux runner
+        run: |
+          uname -sm
+          sudo podman --version
+          test -e /sys/kernel/btf/vmlinux
+          test -e /sys/fs/cgroup/cgroup.controllers
+
+      - name: Learn nginx while curl exercises it
+        id: learn
+        uses: ./
+        with:
+          image: docker.io/library/nginx:alpine
+          create-args: -p 8080:80
+          test-command: |
+            curl -fsS --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/ -o /dev/null
+            curl -sS http://127.0.0.1:8080/missing -o /dev/null -w 'missing page: HTTP %{http_code}\n'
+          timeout: 3m
+          output: demo/nginx.seccomp.json
+          artifact-name: autoconfine-demo-nginx
+
+      - name: Check the first capture
+        env:
+          PROFILE: ${{ steps.learn.outputs.profile }}
+          SYSCALLS: ${{ steps.learn.outputs.syscalls }}
+          DEFAULT_SYSCALLS: ${{ steps.learn.outputs.default-syscalls }}
+          REDUCTION: ${{ steps.learn.outputs.reduction }}
+          DRIFT: ${{ steps.learn.outputs.drift-status }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          profile = json.load(open(os.environ["PROFILE"]))
+          names = {n for rule in profile["syscalls"] for n in rule["names"]}
+          syscalls, default = int(os.environ["SYSCALLS"]), int(os.environ["DEFAULT_SYSCALLS"])
+          assert len(names) == syscalls > 0, (len(names), syscalls)
+          assert {"execve", "bind"} <= names, "nginx's startup is missing from the profile"
+          assert default > syscalls, (default, syscalls)
+          assert 0 < float(os.environ["REDUCTION"]) < 100, os.environ["REDUCTION"]
+          assert os.environ["DRIFT"] == "skipped", os.environ["DRIFT"]
+          print(f"{syscalls} syscalls of {default}, {os.environ['REDUCTION']}% fewer")
+          PY
+
+      # Stands in for a committed profile that is now stale: the same profile
+      # without two syscalls every nginx start makes.
+      - name: Make a stale copy of the profile
+        run: |
+          python3 - demo/nginx.seccomp.json demo/stale.seccomp.json <<'PY'
+          import json, sys
+          profile = json.load(open(sys.argv[1]))
+          for rule in profile["syscalls"]:
+              rule["names"] = [n for n in rule["names"] if n not in ("execve", "bind")]
+          json.dump(profile, open(sys.argv[2], "w"), indent=2)
+          PY
+
+      - name: Learn again with an explicit command and check drift
+        id: drift
+        uses: ./
+        with:
+          image: docker.io/library/nginx:alpine
+          command: nginx -g 'daemon off;'
+          create-args: -p 8080:80
+          test-command: curl -fsS --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/ -o /dev/null
+          timeout: 3m
+          output: demo/nginx-rerun.seccomp.json
+          drift-profile: demo/stale.seccomp.json
+          fail-on-drift: 'false'
+          comment: 'false'
+          artifact-name: autoconfine-demo-drift
+          setup-go: 'false' # the first run already installed Go
+
+      - name: Check that drift was reported
+        env:
+          DRIFT: ${{ steps.drift.outputs.drift-status }}
+          NEW: ${{ steps.drift.outputs.new-syscalls }}
+        run: |
+          python3 - <<'PY'
+          import os
+          new = set(filter(None, os.environ["NEW"].split(",")))
+          assert os.environ["DRIFT"] == "found", os.environ["DRIFT"]
+          assert {"execve", "bind"} <= new, new
+          print("drift reported:", ", ".join(sorted(new)))
+          PY
+
+  one-shot:
+    name: Image built with Docker, captured until it exits
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify disposable Linux runner
+        run: |
+          uname -sm
+          sudo podman --version
+          test -e /sys/kernel/btf/vmlinux
+          test -e /sys/fs/cgroup/cgroup.controllers
+
+      - name: Build the demo image with Docker
+        run: docker build -t autoconfine-demo:ci -f examples/demo/Containerfile examples/demo
+
+      - name: Learn the self-test container
+        id: learn
+        uses: ./
+        with:
+          image: autoconfine-demo:ci
+          timeout: 2m
+          output: demo/selftest.seccomp.json
+          comment: 'false'
+          artifact-name: autoconfine-demo-selftest
+
+      - name: Check the capture
+        env:
+          PROFILE: ${{ steps.learn.outputs.profile }}
+          SYSCALLS: ${{ steps.learn.outputs.syscalls }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          profile = json.load(open(os.environ["PROFILE"]))
+          names = {n for rule in profile["syscalls"] for n in rule["names"]}
+          assert len(names) == int(os.environ["SYSCALLS"]) > 0
+          assert "execve" in names and "exit_group" in names, sorted(names)
+          print(len(names), "syscalls")
+          PY
