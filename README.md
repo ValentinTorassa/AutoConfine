@@ -94,7 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: docker build -t myapp:ci .
-      - uses: ValentinTorassa/AutoConfine@<commit-sha> # no release tags yet: pin a commit
+      - uses: ValentinTorassa/AutoConfine@v0.1.0
         with:
           image: myapp:ci
           create-args: -p 8080:8080 -e APP_ENV=test
@@ -140,6 +140,7 @@ What happens, step by step:
 
 Notes:
 
+- Pin a release tag, as in the example. A tag can be moved and a commit cannot, so the hardened option is the full commit SHA the tag points to, with the tag in a comment: `uses: ValentinTorassa/AutoConfine@<40-character SHA> # v0.1.0`. `gh api repos/ValentinTorassa/AutoConfine/commits/v0.1.0 --jq .sha` prints it. The action builds AutoConfine from the source at that ref, so the pin also fixes the CLI version.
 - The container runs under rootful Podman (`sudo podman`) and the probe loads as root, as in the drill. Use disposable runners, such as GitHub-hosted ones.
 - A pull request from a fork gets a read-only token, so the comment fails with a warning; the report is still in the job summary and the artifact.
 - The reduction counts names in the default profile's allow rules, including rules that only apply with certain arguments or capabilities. It describes the size of the allow list, not the security of the profile.
