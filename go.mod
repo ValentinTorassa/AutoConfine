@@ -1,7 +1,10 @@
 module github.com/ValentinTorassa/autoconfine
 
-go 1.22
+go 1.27.0
 
-require github.com/cilium/ebpf v0.17.3
+toolchain go1.27.2
 
-require golang.org/x/sys v0.30.0
+require (
+	github.com/cilium/ebpf v0.22.0
+	golang.org/x/sys v0.49.0
+)

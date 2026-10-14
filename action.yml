@@ -87,7 +87,7 @@ inputs:
   setup-go:
     description: >-
       Install Go with actions/setup-go to build AutoConfine. Set to false when
-      Go 1.22 or later is already on PATH.
+      Go 1.27 or later is already on PATH.
     required: false
     default: 'true'
 

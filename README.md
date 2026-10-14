@@ -126,7 +126,7 @@ What happens, step by step:
 | `comment` | `true` | Post or update the pull request comment. |
 | `github-token` | `github.token` | Token for the comment; needs `pull-requests: write`. |
 | `artifact-name` | `autoconfine-profile` | Artifact name; must be unique within the run. |
-| `setup-go` | `true` | Install Go with `actions/setup-go`; set to `false` if Go 1.22+ is already on PATH. |
+| `setup-go` | `true` | Install Go with `actions/setup-go`; set to `false` if Go 1.27+ is already on PATH. |
 
 | Output | Description |
 |---|---|
