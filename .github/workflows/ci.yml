@@ -4,7 +4,8 @@ permissions:
   contents: read
 jobs:
   go:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moves to Ubuntu 26.04 from 2026-10-19; change the image on purpose.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -22,7 +23,7 @@ jobs:
   # path away, so the bytes match. If Debian updates clang and this fails,
   # rebuild with `make bpf` and commit the object with the source.
   bpf-object:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: debian:trixie
     steps:
       - run: apt-get update && apt-get install -y --no-install-recommends clang make git ca-certificates
